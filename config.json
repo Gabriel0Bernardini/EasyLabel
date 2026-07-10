@@ -1,0 +1,18 @@
+{
+    "mode": "image",
+    "labels": [
+        "goat"
+    ],
+    "confidence": 0.4,
+    "inference_size": [
+        640,
+        640
+    ],
+    "frames_to_extract": 20,
+    "model_weights": "/home/gabriel/Desktop/IC/modelos/yolov5n_seed42_lr00.01_batch8/weights/best.pt",
+    "input_folder": "/home/gabriel/Desktop/imagensteste",
+    "output_folder": "/home/gabriel/Desktop/Rotulagem/Saida",
+    "complete_output_folder": "/home/gabriel/Desktop/Rotulagem/Saida/Imagens_Rotuladas-imagensteste",
+    "video_path": "/home/gabriel/Desktop/IC/Videos/entradaTeste/cam01-2025-04-25-15-10-04-capril_K89RvWCg.avi",
+    "overwrite_output": true
+}
