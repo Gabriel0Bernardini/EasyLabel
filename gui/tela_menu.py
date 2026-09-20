@@ -28,12 +28,12 @@ class TelaMenu(ttk.Frame):
             style="botao.TButton",
         ).pack(pady=15, fill="x", padx=80)
 
-        # ttk.Button(
-        #     self,
-        #     text="Rotular imagens a partir de uma pasta",
-        #     command=master.mostrar_tela_imagens,  
-        #     style="botao.TButton",
-        # ).pack(pady=15, fill="x", padx=80)
+        ttk.Button(
+            self,
+            text="Rotular imagens a partir de uma pasta",
+            command=master.mostrar_tela_imagens,  
+            style="botao.TButton",
+        ).pack(pady=15, fill="x", padx=80)
 
         ttk.Button(
             self,
