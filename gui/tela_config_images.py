@@ -31,6 +31,19 @@ class TelaConfigImagens(ttk.Frame):
             bootstyle="primary"
         ).pack(pady=5)
 
+        # ===== CHECKBOX USAR MODELO YOLO =====
+        frame_modelo = ttk.Frame(self)
+        frame_modelo.pack(pady=10, padx=20, fill="x")
+
+        self.var_usar_modelo = ttk.BooleanVar(value=bool(load_config().get("model_weights", "")))
+        self.check_modelo = ttk.Checkbutton(
+            frame_modelo,
+            text="Usar modelo YOLO para pré-rotular as imagens",
+            variable=self.var_usar_modelo,
+            bootstyle="round-toggle"
+        )
+        self.check_modelo.pack(anchor="w")
+
         # ===== FRAME DE BOTÕES =====
         frame_buttons = ttk.Frame(self)
         frame_buttons.pack(pady=20)
@@ -64,11 +77,19 @@ class TelaConfigImagens(ttk.Frame):
         """Inicia o processo de rotulagem a partir de uma pasta de imagens"""
 
         caminho_pasta = self.entrada_pasta.get().strip()
+        usar_modelo = self.var_usar_modelo.get()
 
         # Validações
         if not caminho_pasta:
             messagebox.showerror("Erro", "Por favor, selecione uma pasta de imagens!")
             return
+
+        # Validar modelo se o checkbox estiver marcado
+        if usar_modelo:
+            config = load_config()
+            if not config.get("model_weights", ""):
+                messagebox.showerror("Erro", "Para usar o modelo YOLO, configure o caminho do modelo nas Configurações!")
+                return
 
         messagebox.showinfo(
             "Processando",
@@ -79,7 +100,7 @@ class TelaConfigImagens(ttk.Frame):
         update_config_fields(input_folder=caminho_pasta)
 
         # chamar a função de preparação do dataset a partir da pasta de imagens
-        images_dir, labels_dir = prepare_from_images()
+        images_dir, labels_dir = prepare_from_images(use_model=usar_modelo)
         print(images_dir)
 
         config = load_config()
