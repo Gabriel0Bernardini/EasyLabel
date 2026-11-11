@@ -49,7 +49,8 @@ def load_config():
         "mode": "", "labels": [], "confidence": 0.4,
         "inference_size": [640, 640], "frames_to_extract": 10,
         "model_weights": "", "input_folder": "", "output_folder": "",
-        "complete_output_folder": "", "video_path": "", "overwrite_output": True
+        "complete_output_folder": "", "video_path": "", "overwrite_output": True,
+        "box_thickness": 2
     }
     with open(config_path, "w") as f:
         json.dump(fallback, f, indent=4)
@@ -61,6 +62,7 @@ def save_config(labels, confidence, inference_size, frames_to_extract,
                 video_path="", overwrite_output=True, mode="folder"):
     """Salva as configurações no arquivo JSON"""
     try:
+        current_cfg = load_config()
         config = {
             "mode": mode,
             "labels": labels,
@@ -68,11 +70,12 @@ def save_config(labels, confidence, inference_size, frames_to_extract,
             "inference_size": [int(inference_size[0]), int(inference_size[1])],
             "frames_to_extract": int(frames_to_extract),
             "model_weights": model_weights,
-            "input_folder": load_config().get("input_folder", ""),  # Manter valor anterior
+            "input_folder": current_cfg.get("input_folder", ""),  # Manter valor anterior
             "output_folder": output_folder,
             "complete_output_folder": output_folder,
             "video_path": video_path,
-            "overwrite_output": bool(overwrite_output)
+            "overwrite_output": bool(overwrite_output),
+            "box_thickness": current_cfg.get("box_thickness", 2)
         }
         
         with open(get_config_path(), "w") as f:
@@ -118,8 +121,7 @@ def update_config_fields(**kwargs):
         config = load_config()
 
         for chave, valor in kwargs.items():
-            if chave in config:
-                config[chave] = valor
+            config[chave] = valor
 
         with open(get_config_path(), "w") as f:
             json.dump(config, f, indent=4)
