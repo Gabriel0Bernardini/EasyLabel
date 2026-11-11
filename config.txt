@@ -1,0 +1,18 @@
+{
+    "mode": "folder",
+    "labels": [
+        "goat"
+    ],
+    "confidence": 0.4,
+    "inference_size": [
+        640,
+        640
+    ],
+    "frames_to_extract": 10,
+    "model_weights": "",
+    "input_folder": "",
+    "output_folder": "",
+    "complete_output_folder": "",
+    "video_path": "",
+    "overwrite_output": true
+}

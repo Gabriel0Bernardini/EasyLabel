@@ -1,23 +1,10 @@
 #config_manager.py
 import json
+import shutil
 from pathlib import Path
 
 CONFIG_FILE = "config.json"
-
-# Configurações padrão
-DEFAULT_CONFIG = {
-    "mode": "folder",
-    "labels": ["goat"],
-    "confidence": 0.4,
-    "inference_size": [640, 640],
-    "frames_to_extract": 10,
-    "model_weights": "",
-    "input_folder": "",
-    "output_folder": "",
-    "complete_output_folder": "",
-    "video_path": "",
-    "overwrite_output": True
-}
+TEMPLATE_FILE = "config.txt"
 
 
 def get_config_path():
@@ -25,17 +12,48 @@ def get_config_path():
     return Path(CONFIG_FILE)
 
 
+def get_template_path():
+    """Retorna o caminho do arquivo template"""
+    return Path(TEMPLATE_FILE)
+
+
 def load_config():
-    """Carrega as configurações do arquivo JSON. Se não existir, retorna as padrões"""
-    try:
-        if get_config_path().exists():
-            with open(get_config_path(), "r") as f:
+    """Carrega as configurações do arquivo JSON. Se não existir, cria a partir do config.txt"""
+    config_path = get_config_path()
+    template_path = get_template_path()
+
+    # Se config.json já existe, carrega normalmente
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Erro ao carregar config.json: {e}")
+
+    # Se config.json não existe, cria a partir do config.txt
+    if template_path.exists():
+        try:
+            # Valida que o template é JSON válido
+            with open(template_path, "r") as f:
                 config = json.load(f)
-                return config
-    except Exception as e:
-        print(f"Erro ao carregar configurações: {e}")
-    
-    return DEFAULT_CONFIG.copy()
+            # Copia o template para config.json
+            shutil.copy(template_path, config_path)
+            print("config.json criado a partir do config.txt")
+            return config
+        except Exception as e:
+            print(f"Erro ao ler config.txt: {e}")
+
+    # Fallback: se nenhum arquivo existe, retorna config mínima
+    print("AVISO: config.txt não encontrado. Verifique se o arquivo existe no diretório do projeto.")
+    fallback = {
+        "mode": "", "labels": [], "confidence": 0.4,
+        "inference_size": [640, 640], "frames_to_extract": 10,
+        "model_weights": "", "input_folder": "", "output_folder": "",
+        "complete_output_folder": "", "video_path": "", "overwrite_output": True
+    }
+    with open(config_path, "w") as f:
+        json.dump(fallback, f, indent=4)
+    return fallback
 
 
 def save_config(labels, confidence, inference_size, frames_to_extract, 
