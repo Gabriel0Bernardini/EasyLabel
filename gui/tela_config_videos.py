@@ -39,6 +39,19 @@ class TelaConfigVideos(ttk.Frame):
         self.entrada_frames = ttk.Entry(frame_frames)
         self.entrada_frames.pack(fill="x", pady=5)
 
+        # ===== CHECKBOX USAR MODELO YOLO =====
+        frame_modelo = ttk.Frame(self)
+        frame_modelo.pack(pady=10, padx=20, fill="x")
+
+        self.var_usar_modelo = ttk.BooleanVar(value=bool(load_config().get("model_weights", "")))
+        self.check_modelo = ttk.Checkbutton(
+            frame_modelo,
+            text="Usar modelo YOLO para pré-rotular as imagens",
+            variable=self.var_usar_modelo,
+            bootstyle="round-toggle"
+        )
+        self.check_modelo.pack(anchor="w")
+
         # ===== FRAME DE BOTÕES =====
         frame_buttons = ttk.Frame(self)
         frame_buttons.pack(pady=20)
@@ -77,7 +90,7 @@ class TelaConfigVideos(ttk.Frame):
 
         caminho_video = self.entrada_caminho.get().strip()
         frames_str = self.entrada_frames.get().strip()
-        frames_int = int(frames_str) 
+        usar_modelo = self.var_usar_modelo.get()
 
         # Validações
         if not caminho_video:
@@ -85,17 +98,24 @@ class TelaConfigVideos(ttk.Frame):
             return
 
         try:
-            num_frames = frames_int
-            if num_frames <= 0:
+            frames_int = int(frames_str)
+            if frames_int <= 0:
                 messagebox.showerror("Erro", "Número de frames deve ser maior que 0!")
                 return
         except ValueError:
             messagebox.showerror("Erro", "Número de frames deve ser um número inteiro!")
             return
 
+        # Validar modelo se o checkbox estiver marcado
+        if usar_modelo:
+            config = load_config()
+            if not config.get("model_weights", ""):
+                messagebox.showerror("Erro", "Para usar o modelo YOLO, configure o caminho do modelo nas Configurações!")
+                return
+
         messagebox.showinfo(
             "Processando",
-            f"Iniciando extração de {num_frames} frames do vídeo:\n{caminho_video}"
+            f"Iniciando extração de {frames_int} frames do vídeo:\n{caminho_video}"
         )
 
         #salvando as informacoes no arquivo de config
@@ -103,7 +123,7 @@ class TelaConfigVideos(ttk.Frame):
                              frames_to_extract=frames_int)
         
         #chamar a função de preparação do dataset a partir do vídeo
-        images_dir, labels_dir = prepare_from_video()
+        images_dir, labels_dir = prepare_from_video(use_model=usar_modelo)
         print(images_dir)
 
         config = load_config()
@@ -113,7 +133,4 @@ class TelaConfigVideos(ttk.Frame):
         top.title("AutoLabeler - revisão manual")
 
         LabelingGUI(top, images_dir, labels_dir, labels, autosave=True)
-
-
-        
 
