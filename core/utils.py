@@ -1,7 +1,7 @@
 # utils.py
 from pathlib import Path
 from core.video_processing import extract_frames_equal
-from core.inference import load_model, run_inference_on_image, save_yolo_label
+from core.inference import save_yolo_label
 from core.config_manager import load_config, create_output_folder, create_output_folder_images
 
 def ensure_dataset_dirs(base_dir: str):
@@ -87,7 +87,7 @@ def pixel_to_yolo(x1, y1, x2, y2, img_w, img_h, class_id=0):
     return (class_id, xc, yc, w, h)
 
 
-def prepare_from_video():
+def prepare_from_video(use_model=True):
     config = load_config()
 
     video_path = config["video_path"]
@@ -116,32 +116,43 @@ def prepare_from_video():
     #extrai os frames do vídeo e salva na pasta images/
     extract_frames_equal() #não precisa de parametros pois tudo é tratado dentro da função através do config.json
 
-    #carregar modelo e inferir em cada imagem gerada
-    model = load_model()
-
     #Lista todos os arquivos(imagens) na pasta images/
     files = sorted(Path(images_dir).iterdir())
-    for f in files:
-        if f.suffix.lower() not in (".jpg", ".jpeg", ".png"):
-            #Se o arquivo não for uma imagem, ignora
-            continue
-        
-        #fp é o caminho completo da imagem da iteração atual
-        fp = Path(images_dir) / f
 
-        #rodar inferência na imagem
-        boxes = run_inference_on_image(model, fp, conf=conf, imgsz=imgsz[0])
-        # boxes são (class, xc, yc, w, h, conf) ou (class, xc, yc, w, h)
+    if use_model:
+        #carregar modelo e inferir em cada imagem gerada
+        from core.inference import load_model, run_inference_on_image
+        model = load_model()
 
-        #prepara uma lista de caixas para salvar no formato YOLO, os 5 primeiros elementos esperados
-        boxes_to_save = []
-        for b in boxes:
-            if len(b) >= 5:
-                boxes_to_save.append((int(b[0]), b[1], b[2], b[3], b[4]))
+        for f in files:
+            if f.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+                #Se o arquivo não for uma imagem, ignora
+                continue
+            
+            #fp é o caminho completo da imagem da iteração atual
+            fp = Path(images_dir) / f
 
-        #salva o arquivo de label da imagem na pasta labels/
-        label_fp = Path(labels_dir) / (f.stem + ".txt")
-        save_yolo_label(label_fp, boxes_to_save)
+            #rodar inferência na imagem
+            boxes = run_inference_on_image(model, fp, conf=conf, imgsz=imgsz[0])
+            # boxes são (class, xc, yc, w, h, conf) ou (class, xc, yc, w, h)
+
+            #prepara uma lista de caixas para salvar no formato YOLO, os 5 primeiros elementos esperados
+            boxes_to_save = []
+            for b in boxes:
+                if len(b) >= 5:
+                    boxes_to_save.append((int(b[0]), b[1], b[2], b[3], b[4]))
+
+            #salva o arquivo de label da imagem na pasta labels/
+            label_fp = Path(labels_dir) / (f.stem + ".txt")
+            save_yolo_label(label_fp, boxes_to_save)
+    else:
+        # Sem modelo: cria arquivos de label vazios para cada imagem
+        for f in files:
+            if f.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+                continue
+            label_fp = Path(labels_dir) / (f.stem + ".txt")
+            save_yolo_label(label_fp, [])
+
     return images_dir, labels_dir
 
 def prepare_from_folder():
@@ -156,7 +167,7 @@ def prepare_from_folder():
         raise RuntimeError("Pasta deve conter images/ e labels/")
     return images_dir, labels_dir
 
-def prepare_from_images():
+def prepare_from_images(use_model=True):
     config = load_config()
     input_folder = config["input_folder"]
     out_base = config["output_folder"]
@@ -167,6 +178,7 @@ def prepare_from_images():
     
     """
     Aplica o modelo YOLO em todas as imagens de input_folder e salva resultados em out_base/images e out_base/labels.
+    Se use_model=False, apenas copia as imagens e cria arquivos de label vazios.
     """
     images_dir, labels_dir = ensure_dataset_dirs(create_output_folder_images())
     # Copia imagens para images_dir (se overwrite ou se images_dir vazio)
@@ -177,20 +189,32 @@ def prepare_from_images():
                 dest = images_dir / img.name
                 if not dest.exists() or overwrite:
                     dest.write_bytes(img.read_bytes())
-    # Carrega modelo
-    model = load_model()
+
     files = sorted(images_dir.iterdir())
-    for f in files:
-        if f.suffix.lower() not in (".jpg", ".jpeg", ".png"):
-            continue
-        fp = images_dir / f.name
-        boxes = run_inference_on_image(model, fp, conf=conf, imgsz=imgsz[0])
-        boxes_to_save = []
-        for b in boxes:
-            if len(b) >= 5:
-                boxes_to_save.append((int(b[0]), b[1], b[2], b[3], b[4]))
-        label_fp = labels_dir / (f.stem + ".txt")
-        save_yolo_label(label_fp, boxes_to_save)
+
+    if use_model:
+        # Carrega modelo e roda inferência
+        from core.inference import load_model, run_inference_on_image
+        model = load_model()
+        for f in files:
+            if f.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+                continue
+            fp = images_dir / f.name
+            boxes = run_inference_on_image(model, fp, conf=conf, imgsz=imgsz[0])
+            boxes_to_save = []
+            for b in boxes:
+                if len(b) >= 5:
+                    boxes_to_save.append((int(b[0]), b[1], b[2], b[3], b[4]))
+            label_fp = labels_dir / (f.stem + ".txt")
+            save_yolo_label(label_fp, boxes_to_save)
+    else:
+        # Sem modelo: cria arquivos de label vazios para cada imagem
+        for f in files:
+            if f.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+                continue
+            label_fp = labels_dir / (f.stem + ".txt")
+            save_yolo_label(label_fp, [])
+
     return images_dir, labels_dir
 
 
