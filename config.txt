@@ -14,6 +14,6 @@
     "output_folder": "",
     "complete_output_folder": "",
     "video_path": "",
-    "overwrite_output": true
+    "overwrite_output": true,
     "box_thickness": 2
 }

@@ -150,9 +150,18 @@ class LabelingGUI:
 
         self.root.bind_all("<Delete>", self.delete_selected_box)
 
+        # Zoom (mouse wheel, touchpads e botões de scroll)
         self.canvas.bind("<MouseWheel>", self.on_zoom)
         self.canvas.bind("<Button-4>", self.on_zoom)
         self.canvas.bind("<Button-5>", self.on_zoom)
+        # Pinch-to-zoom / scroll com Ctrl no touchpad
+        self.canvas.bind("<Control-MouseWheel>", self.on_zoom)
+        self.canvas.bind("<Control-Button-4>", self.on_zoom)
+        self.canvas.bind("<Control-Button-5>", self.on_zoom)
+        # Binds no root também caso o foco esteja fora do canvas ao usar o touchpad
+        self.root.bind("<Control-MouseWheel>", self.on_zoom)
+        self.root.bind("<Control-Button-4>", self.on_zoom)
+        self.root.bind("<Control-Button-5>", self.on_zoom)
 
         self.canvas.bind("<ButtonPress-3>", self.on_pan_start)
         self.canvas.bind("<B3-Motion>", self.on_pan_move)
@@ -829,20 +838,35 @@ class LabelingGUI:
         max_zoom = 10.0
         old_zoom = self.zoom_factor
 
-        if hasattr(event, 'num'):
+        zoom_in = False
+        zoom_out = False
+
+        if hasattr(event, 'num') and event.num in (4, 5):
             if event.num == 4:
-                self.zoom_factor = min(self.zoom_factor * 1.1, max_zoom)
+                zoom_in = True
             elif event.num == 5:
-                self.zoom_factor = max(self.zoom_factor / 1.1, min_zoom)
-        elif hasattr(event, 'delta'):
+                zoom_out = True
+        elif hasattr(event, 'delta') and event.delta != 0:
             if event.delta > 0:
-                self.zoom_factor = min(self.zoom_factor * 1.1, max_zoom)
+                zoom_in = True
             else:
-                self.zoom_factor = max(self.zoom_factor / 1.1, min_zoom)
+                zoom_out = True
+
+        if zoom_in:
+            self.zoom_factor = min(self.zoom_factor * 1.1, max_zoom)
+        elif zoom_out:
+            self.zoom_factor = max(self.zoom_factor / 1.1, min_zoom)
+        else:
+            return
 
         # Ajusta o offset para manter o ponto do mouse fixo ao dar zoom
-        if event is not None:
-            mx, my = event.x, event.y
+        if event is not None and hasattr(event, 'x') and hasattr(event, 'y'):
+            # Se o evento veio pelo root, ajusta as coordenadas para o canvas
+            if event.widget != self.canvas:
+                mx = event.x_root - self.canvas.winfo_rootx()
+                my = event.y_root - self.canvas.winfo_rooty()
+            else:
+                mx, my = event.x, event.y
             scale = self.zoom_factor / old_zoom
             self.display_offset[0] = int(mx - scale * (mx - self.display_offset[0]))
             self.display_offset[1] = int(my - scale * (my - self.display_offset[1]))
