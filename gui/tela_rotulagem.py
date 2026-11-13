@@ -34,6 +34,18 @@ class LabelingGUI:
         self.display_offset = [0, 0]  # [x, y]
         self.pan_start = None
 
+        # Configurações de Espessura da BB e Hover
+        try:
+            from core.config_manager import load_config
+            cfg = load_config()
+            self.box_thickness = int(cfg.get("box_thickness", 2))
+        except Exception:
+            self.box_thickness = 2
+
+        self.hovered_box = None
+        self.hover_timer = None
+        self.hover_badge_visible = False
+
         # ===================== SETUP UI (REFATORADO) =====================
 
         # Configurar janela principal
@@ -70,8 +82,8 @@ class LabelingGUI:
         self.controls_frame = tk.Frame(self.left_frame)
         self.controls_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
 
-        # Faz os botões se ajustarem
-        for i in range(6):
+        # Faz os controles se ajustarem
+        for i in range(7):
             self.controls_frame.columnconfigure(i, weight=1)
 
         # Botões
@@ -97,9 +109,25 @@ class LabelingGUI:
         )
         self.label_selector.grid(row=0, column=4, sticky="ew", padx=2)
 
+        # Indicador e controle de espessura de Bounding Box (atalhos [ e ])
+        thickness_frame = tk.Frame(self.controls_frame)
+        thickness_frame.grid(row=0, column=5, sticky="ew", padx=2)
+        tk.Button(thickness_frame, text="-", width=2, command=self.diminuir_espessura)\
+            .pack(side="left", padx=1)
+        self.thickness_label = tk.Label(
+            thickness_frame,
+            text=f"BB: {self.box_thickness}px",
+            relief="groove",
+            padx=4,
+            pady=2
+        )
+        self.thickness_label.pack(side="left", fill="both", expand=True)
+        tk.Button(thickness_frame, text="+", width=2, command=self.aumentar_espessura)\
+            .pack(side="left", padx=1)
+
         # Contador
         self.counter_label = tk.Label(self.controls_frame, text="")
-        self.counter_label.grid(row=0, column=5, sticky="e", padx=5)
+        self.counter_label.grid(row=0, column=6, sticky="e", padx=5)
 
         # ===================== LISTBOX (LATERAL) =====================
         self.box_listbox = tk.Listbox(self.right_frame, width=30)
@@ -117,18 +145,38 @@ class LabelingGUI:
         self.canvas.bind("<ButtonPress-1>", self.on_button_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_button_release)
+        self.canvas.bind("<Motion>", self.on_mouse_move)
+        self.canvas.bind("<Leave>", self.on_mouse_leave)
 
         self.root.bind_all("<Delete>", self.delete_selected_box)
 
+        # Zoom (mouse wheel, touchpads e botões de scroll)
         self.canvas.bind("<MouseWheel>", self.on_zoom)
         self.canvas.bind("<Button-4>", self.on_zoom)
         self.canvas.bind("<Button-5>", self.on_zoom)
+        # Pinch-to-zoom / scroll com Ctrl no touchpad
+        self.canvas.bind("<Control-MouseWheel>", self.on_zoom)
+        self.canvas.bind("<Control-Button-4>", self.on_zoom)
+        self.canvas.bind("<Control-Button-5>", self.on_zoom)
+        # Binds no root também caso o foco esteja fora do canvas ao usar o touchpad
+        self.root.bind("<Control-MouseWheel>", self.on_zoom)
+        self.root.bind("<Control-Button-4>", self.on_zoom)
+        self.root.bind("<Control-Button-5>", self.on_zoom)
 
         self.canvas.bind("<ButtonPress-3>", self.on_pan_start)
         self.canvas.bind("<B3-Motion>", self.on_pan_move)
 
         self.root.bind_all('<Left>', self._on_left_arrow)
         self.root.bind_all('<Right>', self._on_right_arrow)
+
+        # Atalhos para espessura da BB
+        self.root.bind_all("<bracketleft>", self.diminuir_espessura)
+        self.root.bind_all("<bracketright>", self.aumentar_espessura)
+        self.root.bind_all("[", self.diminuir_espessura)
+        self.root.bind_all("]", self.aumentar_espessura)
+        self.root.bind_all("-", self.diminuir_espessura)
+        self.root.bind_all("+", self.aumentar_espessura)
+        self.root.bind_all("=", self.aumentar_espessura)
 
         self.load_image() #carrega a primeira imagem e seus labels
         self.update_counter()  # Atualiza o contador ao iniciar
@@ -150,6 +198,7 @@ class LabelingGUI:
         Alterna entre o modo de criação e o modo de edição.
         Atualiza o texto do botão e o estado atual.
         """
+        self._clear_hover()
         if self.modo == "criacao":
             self.modo = "edicao"
         else:
@@ -157,13 +206,170 @@ class LabelingGUI:
 
         # Atualiza o texto do botão
         self.botao_modo.config(text=f"Modo: {self.modo.capitalize()}")
-
-        # Feedback no terminal (opcional)
         print(f"Modo alterado para: {self.modo}")
 
+    def _is_entry_focused(self):
+        focus = self.root.focus_get()
+        return isinstance(focus, (tk.Entry, ttk.Entry))
 
+    def alterar_espessura(self, delta):
+        nova = max(1, min(10, self.box_thickness + delta))
+        if nova != self.box_thickness:
+            self.box_thickness = nova
+            self.atualizar_label_espessura()
+            self.redraw_canvas_boxes()
+            try:
+                from core.config_manager import update_config_fields
+                update_config_fields(box_thickness=self.box_thickness)
+            except Exception:
+                pass
+
+    def diminuir_espessura(self, event=None):
+        if self._is_entry_focused():
+            return
+        self.alterar_espessura(-1)
+
+    def aumentar_espessura(self, event=None):
+        if self._is_entry_focused():
+            return
+        self.alterar_espessura(1)
+
+    def atualizar_label_espessura(self):
+        if hasattr(self, 'thickness_label') and self.thickness_label.winfo_exists():
+            self.thickness_label.config(text=f"BB: {self.box_thickness}px")
+
+    def _clear_hover(self):
+        if self.hover_timer is not None:
+            self.root.after_cancel(self.hover_timer)
+            self.hover_timer = None
+        if self.hovered_box is not None or self.hover_badge_visible:
+            self.hovered_box = None
+            self.hover_badge_visible = False
+            self.canvas.delete("hover_badge")
+            self.redraw_canvas_boxes()
+
+    def on_mouse_leave(self, event=None):
+        self._clear_hover()
+
+    def on_mouse_move(self, event):
+        if self.drawing or self.moving or self.acao is not None or self.pan_start is not None:
+            self._clear_hover()
+            return
+
+        cx = event.x - self.display_offset[0]
+        cy = event.y - self.display_offset[1]
+
+        if not hasattr(self, 'display_size') or cx < 0 or cy < 0 or cx > self.display_size[0] or cy > self.display_size[1]:
+            self._clear_hover()
+            return
+
+        ix = int(cx / self.scale_x)
+        iy = int(cy / self.scale_y)
+
+        hovered_idx = None
+        for i in range(len(self.boxes) - 1, -1, -1):
+            x1, y1, x2, y2, _ = self.boxes[i]
+            x_min, x_max = min(x1, x2), max(x1, x2)
+            y_min, y_max = min(y1, y2), max(y1, y2)
+            if x_min <= ix <= x_max and y_min <= iy <= y_max:
+                hovered_idx = i
+                break
+
+        if hovered_idx is not None:
+            if self.hovered_box != hovered_idx:
+                if self.hover_timer is not None:
+                    self.root.after_cancel(self.hover_timer)
+                    self.hover_timer = None
+                self.hover_badge_visible = False
+                self.hovered_box = hovered_idx
+                self.redraw_canvas_boxes()
+                self.hover_timer = self.root.after(500, self._trigger_hover_badge)
+        else:
+            if self.hovered_box is not None:
+                self._clear_hover()
+
+    def _trigger_hover_badge(self):
+        self.hover_timer = None
+        if self.hovered_box is not None and 0 <= self.hovered_box < len(self.boxes):
+            self.hover_badge_visible = True
+            self._draw_hover_badge(self.hovered_box)
+
+    def _draw_hover_badge(self, idx):
+        self.canvas.delete("hover_badge")
+        if not (0 <= idx < len(self.boxes)):
+            return
+
+        x1, y1, x2, y2, cid = self.boxes[idx]
+        x_min, x_max = min(x1, x2), max(x1, x2)
+        y_min, y_max = min(y1, y2), max(y1, y2)
+
+        sx1 = int(x_min * self.scale_x) + self.display_offset[0]
+        sy1 = int(y_min * self.scale_y) + self.display_offset[1]
+
+        class_name = self.labels_list[cid] if cid < len(self.labels_list) else str(cid)
+        badge_text = f" {class_name} (#{idx + 1}) "
+
+        badge_y = sy1 - 22 if sy1 >= 25 else sy1 + 4
+        badge_x = max(2, sx1)
+
+        text_id = self.canvas.create_text(
+            badge_x + 5,
+            badge_y + 10,
+            text=badge_text,
+            fill="#ffffff",
+            font=("Helvetica", 9, "bold"),
+            anchor="w",
+            tags="hover_badge"
+        )
+        bbox = self.canvas.bbox(text_id)
+        if bbox:
+            bx1, by1, bx2, by2 = bbox
+            pad = 3
+            bg_id = self.canvas.create_rectangle(
+                bx1 - pad, by1 - pad, bx2 + pad, by2 + pad,
+                fill="#1e1e1e",
+                outline="#ffcc00",
+                width=1,
+                tags="hover_badge"
+            )
+            self.canvas.tag_lower(bg_id, text_id)
+
+    def redraw_canvas_boxes(self):
+        """
+        Redesenha todas as bounding boxes exclusivamente no Canvas Tkinter,
+        mantendo a imagem PIL limpa e suportando espessura variável e highlights.
+        """
+        self.canvas.delete("box")
+        self.canvas.delete("hover_badge")
+
+        for i, (x1, y1, x2, y2, cid) in enumerate(self.boxes):
+            sx1 = int(x1 * self.scale_x) + self.display_offset[0]
+            sy1 = int(y1 * self.scale_y) + self.display_offset[1]
+            sx2 = int(x2 * self.scale_x) + self.display_offset[0]
+            sy2 = int(y2 * self.scale_y) + self.display_offset[1]
+
+            width = self.box_thickness
+            if self.selected_box == i:
+                color = "cyan"
+                width = max(width + 1, 2)
+            elif self.hovered_box == i:
+                color = "#ffcc00"  # Destaque em amarelo ouro ao passar o mouse
+                width = max(width + 1, 2)
+            else:
+                color = "red"
+
+            self.canvas.create_rectangle(
+                sx1, sy1, sx2, sy2,
+                outline=color,
+                width=width,
+                tags=("box", f"box_{i}")
+            )
+
+        if self.hover_badge_visible and self.hovered_box is not None and 0 <= self.hovered_box < len(self.boxes):
+            self._draw_hover_badge(self.hovered_box)
 
     def load_image(self):
+        self._clear_hover()
         #função para carregar a imagem atual e seus labels
         #essa função é chamada ao iniciar a GUI e ao mudar de imagem (próxima/anterior)
 
@@ -188,7 +394,7 @@ class LabelingGUI:
             self.boxes.append((x1, y1, x2, y2, b[0]))
         
         self.root.title(f"AutoLabeler – Editando: {self.img_files[self.index]}")
-        self.draw_image()
+        self.draw_image(recenter=True)
         self.update_counter()  # Garante atualização ao carregar imagem
 
 
@@ -227,32 +433,29 @@ class LabelingGUI:
 
 
 
-    def draw_image(self):
-        # Corrige bug de pil não definida e lógica de escala/offset
-        pil_img = self.current_image.copy()
-        draw = ImageDraw.Draw(pil_img)
+    def draw_image(self, recenter=True):
+        if self.current_image is None:
+            return
 
-        for i, (x1, y1, x2, y2, cid) in enumerate(self.boxes):
-            x1, x2 = sorted([x1, x2])
-            y1, y2 = sorted([y1, y2])
-            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-            draw.text((x1+4, y1+4), f"{self.labels_list[cid]} ({i})", fill="yellow")
+        pil_img = self.current_image
 
         w, h = pil_img.size
         canvas_w = self.canvas.winfo_width() or 800
         canvas_h = self.canvas.winfo_height() or 800
         scale_base = min(canvas_w / w, canvas_h / h)
         scale = scale_base * self.zoom_factor
-        new_w = int(w * scale)
-        new_h = int(h * scale)
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
         pil_resized = pil_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         self.display_size = pil_resized.size
         self.scale_x = scale
         self.scale_y = scale
-        # Centralizar a imagem no canvas
-        offset_x = max((canvas_w - new_w) // 2, 0)
-        offset_y = max((canvas_h - new_h) // 2, 0)
-        self.display_offset = [offset_x, offset_y]
+
+        if recenter:
+            offset_x = max((canvas_w - new_w) // 2, 0)
+            offset_y = max((canvas_h - new_h) // 2, 0)
+            self.display_offset = [offset_x, offset_y]
+
         self.tkimg = ImageTk.PhotoImage(pil_resized)
         self.canvas.delete("all")
         self.canvas.create_image(
@@ -262,55 +465,14 @@ class LabelingGUI:
             image=self.tkimg,
             tags="fundo"
         )
-        # Desenha as bounding boxes na escala correta
-        for i, (x1, y1, x2, y2, cid) in enumerate(self.boxes):
-            sx1 = int(x1 * self.scale_x) + self.display_offset[0]
-            sy1 = int(y1 * self.scale_y) + self.display_offset[1]
-            sx2 = int(x2 * self.scale_x) + self.display_offset[0]
-            sy2 = int(y2 * self.scale_y) + self.display_offset[1]
-            color = "red"
-            if self.selected_box == i:
-                color = "cyan"
-            self.canvas.create_rectangle(sx1, sy1, sx2, sy2, outline=color, width=3, tags=f"box_{i}")
+        self.redraw_canvas_boxes()
         self.refresh_listbox()
+
     def draw_boxes_overlay(self):
         """
-        Redesenha a imagem e as caixas no canvas, mantendo o zoom, escala e centralização atuais,
-        sem recalcular escala ou offset. Usa exatamente os mesmos parâmetros de draw_image.
+        Redesenha as caixas no canvas mantendo o fundo atual.
         """
-        pil_img = self.current_image.copy()
-        draw = ImageDraw.Draw(pil_img)
-        for i, (x1, y1, x2, y2, cid) in enumerate(self.boxes):
-            x1, x2 = sorted([x1, x2])
-            y1, y2 = sorted([y1, y2])
-            draw.rectangle([x1, y1, x2, y2], outline="red", width=3)
-            draw.text((x1+4, y1+4), f"{self.labels_list[cid]} ({i})", fill="yellow")
-
-        # Usa o mesmo tamanho já calculado
-        new_w, new_h = self.display_size
-        pil_resized = pil_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        self.tkimg = ImageTk.PhotoImage(pil_resized)
-
-        # limpa tudo no canvas e desenha o fundo
-        self.canvas.delete("all")
-        self.canvas.create_image(
-            self.display_offset[0],
-            self.display_offset[1],
-            anchor="nw",
-            image=self.tkimg,
-            tags="fundo"
-        )
-
-        # redesenha todas as bounding boxes
-        for i, (x1, y1, x2, y2, cid) in enumerate(self.boxes):
-            sx1 = int(x1 * self.scale_x) + self.display_offset[0]
-            sy1 = int(y1 * self.scale_y) + self.display_offset[1]
-            sx2 = int(x2 * self.scale_x) + self.display_offset[0]
-            sy2 = int(y2 * self.scale_y) + self.display_offset[1]
-            color = "red"
-            if self.selected_box == i:
-                color = "cyan"
-            self.canvas.create_rectangle(sx1, sy1, sx2, sy2, outline=color, width=3, tags="box")
+        self.redraw_canvas_boxes()
 
 
     def refresh_listbox(self):
@@ -341,6 +503,7 @@ class LabelingGUI:
 
     
     def on_button_press(self, event):
+        self._clear_hover()
         # converte coordenadas do clique
         cx = event.x - self.display_offset[0]
         cy = event.y - self.display_offset[1]
@@ -385,7 +548,7 @@ class LabelingGUI:
                 self.refresh_listbox()
                 self.acao = None
 
-            self.draw_image()
+            self.redraw_canvas_boxes()
 
         elif self.modo == "criacao":
             self.drawing = True
@@ -428,7 +591,7 @@ class LabelingGUI:
                 novo_x2 = novo_x1 + largura
                 novo_y2 = novo_y1 + altura
                 self.boxes[self.selected_box] = (novo_x1, novo_y1, novo_x2, novo_y2, cid)
-                self.draw_boxes_overlay()
+                self.redraw_canvas_boxes()
                 return
 
             elif self.acao == "redimensionando":
@@ -454,13 +617,11 @@ class LabelingGUI:
                 if x1 > x2: x1, x2 = x2, x1
                 if y1 > y2: y1, y2 = y2, y1
                 self.boxes[self.selected_box] = (x1, y1, x2, y2, cid)
-                self.draw_boxes_overlay()
+                self.redraw_canvas_boxes()
                 return
 
         if self.modo == "criacao" and self.drawing:
             # Garante que estamos desenhando uma nova caixa (flag self.drawing = True)
-
-            # Converte as coordenadas finais (atuais) e iniciais do desenho
             x2 = ix
             y2 = iy
 
@@ -473,8 +634,8 @@ class LabelingGUI:
             sx2 = int(x2 * self.scale_x) + self.display_offset[0]
             sy2 = int(y2 * self.scale_y) + self.display_offset[1]
 
-            # Desenha o retângulo azul temporário no canvas, dando feedback ao usuário
-            self.canvas.create_rectangle(sx1, sy1, sx2, sy2, outline="blue", width=2, tags="temp")
+            # Desenha o retângulo azul temporário no canvas com a espessura configurada
+            self.canvas.create_rectangle(sx1, sy1, sx2, sy2, outline="blue", width=self.box_thickness, tags="temp")
 
 
 
@@ -484,6 +645,7 @@ class LabelingGUI:
         Ela finaliza as ações iniciadas por um clique e arrasto (<ButtonPress> + <B1-Motion>).
         Dependendo do modo ativo, ela conclui o desenho, movimento ou redimensionamento das caixas.
         """
+        self._clear_hover()
 
         if self.modo == "criacao" and self.drawing:
             # Indica que a fase de desenho terminou
@@ -506,13 +668,19 @@ class LabelingGUI:
             x1, y1 = min(self.start_x, end_x), min(self.start_y, end_y)
             x2, y2 = max(self.start_x, end_x), max(self.start_y, end_y)
 
+            # Evita criar caixas de tamanho zero ou clique acidental
+            if abs(x2 - x1) < 2 or abs(y2 - y1) < 2:
+                self.canvas.delete("temp")
+                return
+
             # Adiciona a nova bounding box à lista de caixas existentes
             # Formato: (x1, y1, x2, y2, classe_id)
             class_id = self.labels_list.index(self.label_var.get())
             self.boxes.append((x1, y1, x2, y2, class_id))
+            self.canvas.delete("temp")
             self.refresh_listbox()
             self.drawing = False
-            self.draw_image()
+            self.redraw_canvas_boxes()
 
             # Se o modo de salvamento automático estiver ativado, salva o progresso
             if self.autosave:
@@ -542,6 +710,7 @@ class LabelingGUI:
 
 
     def prev_image(self):
+        self._clear_hover()
         #função para carregar a imagem anterior da lista (se houver)
         if self.index > 0:  #verifica se não estamos na primeira imagem
             if self.autosave:
@@ -556,6 +725,7 @@ class LabelingGUI:
             self.update_counter()
 
     def next_image(self):
+        self._clear_hover()
         #função para avançar para a próxima imagem na lista
         if self.index < len(self.img_files) - 1:  #verifica se não estamos na última
             if self.autosave:
@@ -602,6 +772,7 @@ class LabelingGUI:
 
 
     def on_select_listbox(self, event):
+        self._clear_hover()
         #essa função é chamada quando o usuário seleciona uma caixa na listbox da direita
 
         #obtém a seleção atual (pode ter mais de uma, mas normalmente é uma só)
@@ -613,7 +784,7 @@ class LabelingGUI:
         #pega o índice da caixa selecionada
         idx = sel[0]
         self.selected_box = idx  #armazena a referência para uso posterior (ex: exclusão)
-        self.draw_image()
+        self.redraw_canvas_boxes()
 
 
     def delete_selected_box(self, event=None):
@@ -622,6 +793,7 @@ class LabelingGUI:
         vem da listbox quanto se a seleção veio do canvas (self.selected_box).
         Pode ser chamada por tecla Delete (event) ou por botão.
         """
+        self._clear_hover()
         # 1) tenta pegar a seleção da listbox (se o usuário clicou nela)
         sel = self.box_listbox.curselection()
         if sel:
@@ -650,7 +822,7 @@ class LabelingGUI:
                 self.selected_box -= 1
 
         # atualiza UI
-        self.draw_image()
+        self.redraw_canvas_boxes()
         self.refresh_listbox()
 
         # limpa seleção na listbox
@@ -661,35 +833,53 @@ class LabelingGUI:
             self.save_current()
 
     def on_zoom(self, event):
+        self._clear_hover()
         min_zoom = 0.2
         max_zoom = 10.0
         old_zoom = self.zoom_factor
 
-        if hasattr(event, 'num'):
+        zoom_in = False
+        zoom_out = False
+
+        if hasattr(event, 'num') and event.num in (4, 5):
             if event.num == 4:
-                self.zoom_factor = min(self.zoom_factor * 1.1, max_zoom)
+                zoom_in = True
             elif event.num == 5:
-                self.zoom_factor = max(self.zoom_factor / 1.1, min_zoom)
-        elif hasattr(event, 'delta'):
+                zoom_out = True
+        elif hasattr(event, 'delta') and event.delta != 0:
             if event.delta > 0:
-                self.zoom_factor = min(self.zoom_factor * 1.1, max_zoom)
+                zoom_in = True
             else:
-                self.zoom_factor = max(self.zoom_factor / 1.1, min_zoom)
+                zoom_out = True
+
+        if zoom_in:
+            self.zoom_factor = min(self.zoom_factor * 1.1, max_zoom)
+        elif zoom_out:
+            self.zoom_factor = max(self.zoom_factor / 1.1, min_zoom)
+        else:
+            return
 
         # Ajusta o offset para manter o ponto do mouse fixo ao dar zoom
-        if event is not None:
-            mx, my = event.x, event.y
+        if event is not None and hasattr(event, 'x') and hasattr(event, 'y'):
+            # Se o evento veio pelo root, ajusta as coordenadas para o canvas
+            if event.widget != self.canvas:
+                mx = event.x_root - self.canvas.winfo_rootx()
+                my = event.y_root - self.canvas.winfo_rooty()
+            else:
+                mx, my = event.x, event.y
             scale = self.zoom_factor / old_zoom
             self.display_offset[0] = int(mx - scale * (mx - self.display_offset[0]))
             self.display_offset[1] = int(my - scale * (my - self.display_offset[1]))
 
-        self.draw_image()
+        self.draw_image(recenter=False)
 
     def on_pan_start(self, event):
+        self._clear_hover()
         self.pan_start = (event.x, event.y)
 
     def on_pan_move(self, event):
         if self.pan_start is not None:
+            self._clear_hover()
             # Calcula o deslocamento
             dx = event.x - self.pan_start[0]
             dy = event.y - self.pan_start[1]
@@ -698,8 +888,9 @@ class LabelingGUI:
             self.display_offset[0] += dx
             self.display_offset[1] += dy
 
-            # Redesenha a imagem e as caixas
-            self.draw_boxes_overlay()
+            # Move a imagem no canvas e atualiza posições das caixas
+            self.canvas.coords("fundo", self.display_offset[0], self.display_offset[1])
+            self.redraw_canvas_boxes()
 
             # Atualiza a posição inicial para o próximo movimento
             self.pan_start = (event.x, event.y)
