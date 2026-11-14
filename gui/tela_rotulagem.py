@@ -83,7 +83,7 @@ class LabelingGUI:
         self.controls_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
 
         # Faz os controles se ajustarem
-        for i in range(7):
+        for i in range(8):
             self.controls_frame.columnconfigure(i, weight=1)
 
         # Botões
@@ -96,8 +96,11 @@ class LabelingGUI:
         tk.Button(self.controls_frame, text="Save", command=self.save_current)\
             .grid(row=0, column=2, sticky="ew", padx=2)
 
-        self.botao_modo = tk.Button(self.controls_frame, text="Modo: Criação", command=self.alternar_modo)
-        self.botao_modo.grid(row=0, column=3, sticky="ew", padx=2)
+        self.botao_repetir = tk.Button(self.controls_frame, text="Repetir Anterior (R)", command=self.repetir_boxes_anterior)
+        self.botao_repetir.grid(row=0, column=3, sticky="ew", padx=2)
+
+        self.botao_modo = tk.Button(self.controls_frame, text="Modo: Criação (M)", command=self.alternar_modo)
+        self.botao_modo.grid(row=0, column=4, sticky="ew", padx=2)
 
         # Combobox (label)
         self.label_var = tk.StringVar(value=self.labels_list[0])
@@ -107,11 +110,11 @@ class LabelingGUI:
             values=self.labels_list,
             state="readonly"
         )
-        self.label_selector.grid(row=0, column=4, sticky="ew", padx=2)
+        self.label_selector.grid(row=0, column=5, sticky="ew", padx=2)
 
         # Indicador e controle de espessura de Bounding Box (atalhos [ e ])
         thickness_frame = tk.Frame(self.controls_frame)
-        thickness_frame.grid(row=0, column=5, sticky="ew", padx=2)
+        thickness_frame.grid(row=0, column=6, sticky="ew", padx=2)
         tk.Button(thickness_frame, text="-", width=2, command=self.diminuir_espessura)\
             .pack(side="left", padx=1)
         self.thickness_label = tk.Label(
@@ -127,7 +130,7 @@ class LabelingGUI:
 
         # Contador
         self.counter_label = tk.Label(self.controls_frame, text="")
-        self.counter_label.grid(row=0, column=6, sticky="e", padx=5)
+        self.counter_label.grid(row=0, column=7, sticky="e", padx=5)
 
         # ===================== LISTBOX (LATERAL) =====================
         self.box_listbox = tk.Listbox(self.right_frame, width=30)
@@ -169,6 +172,12 @@ class LabelingGUI:
         self.root.bind_all('<Left>', self._on_left_arrow)
         self.root.bind_all('<Right>', self._on_right_arrow)
 
+        # Atalhos para modo (M) e repetição de caixas do frame anterior (R)
+        self.root.bind_all("<m>", self.alternar_modo)
+        self.root.bind_all("<M>", self.alternar_modo)
+        self.root.bind_all("<r>", self.repetir_boxes_anterior)
+        self.root.bind_all("<R>", self.repetir_boxes_anterior)
+
         # Atalhos para espessura da BB
         self.root.bind_all("<bracketleft>", self.diminuir_espessura)
         self.root.bind_all("<bracketright>", self.aumentar_espessura)
@@ -193,23 +202,67 @@ class LabelingGUI:
         self.next_image()
 
 
-    def alternar_modo(self):
+    def alternar_modo(self, event=None):
         """
         Alterna entre o modo de criação e o modo de edição.
         Atualiza o texto do botão e o estado atual.
         """
+        if self._is_entry_focused():
+            return
         self._clear_hover()
         if self.modo == "criacao":
             self.modo = "edicao"
         else:
             self.modo = "criacao"
 
-        # Atualiza o texto do botão
-        self.botao_modo.config(text=f"Modo: {self.modo.capitalize()}")
+        # Atualiza o texto do botão indicando o atalho (M)
+        modo_str = "Criação" if self.modo == "criacao" else "Edição"
+        self.botao_modo.config(text=f"Modo: {modo_str} (M)")
         print(f"Modo alterado para: {self.modo}")
+
+    def repetir_boxes_anterior(self, event=None):
+        """
+        Copia as bounding boxes do frame anterior para o frame atual.
+        Útil para sequências onde a posição quase não mudou.
+        Atalho: tecla 'r' ou 'R'
+        """
+        if self._is_entry_focused():
+            return
+        if self.index <= 0:
+            print("Não há frame anterior para copiar.")
+            return
+
+        self._clear_hover()
+        prev_img_file = self.img_files[self.index - 1]
+        prev_label_fp = Path(self.labels_dir) / (Path(prev_img_file).stem + ".txt")
+        prev_yolo_boxes = load_yolo_label(prev_label_fp)
+
+        if not prev_yolo_boxes:
+            print(f"Nenhuma bounding box encontrada no frame anterior ({prev_img_file}).")
+            return
+
+        if self.current_image is None:
+            return
+
+        W, H = self.current_image.size
+        self.boxes = []
+        for b in prev_yolo_boxes:
+            cid, x1, y1, x2, y2 = yolo_to_pixel(b, W, H)
+            self.boxes.append((x1, y1, x2, y2, b[0]))
+
+        self.selected_box = None
+        self.redraw_canvas_boxes()
+        self.refresh_listbox()
+
+        if self.autosave:
+            self.save_current()
+
+        print(f"{len(self.boxes)} box(es) copiada(s) do frame anterior ({prev_img_file}).")
 
     def _is_entry_focused(self):
         focus = self.root.focus_get()
+        if isinstance(focus, ttk.Combobox):
+            return str(focus.cget("state")) != "readonly"
         return isinstance(focus, (tk.Entry, ttk.Entry))
 
     def alterar_espessura(self, delta):
