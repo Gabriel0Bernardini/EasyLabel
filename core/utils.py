@@ -1,8 +1,16 @@
 # utils.py
+import re
 from pathlib import Path
 from core.video_processing import extract_frames_equal
 from core.inference import save_yolo_label
 from core.config_manager import load_config, create_output_folder, create_output_folder_images
+
+def natural_sort_key(s):
+    """
+    Chave para ordenação natural / alfanumérica de strings.
+    Garante que 'img 1', 'img 2', 'img 10', 'img 1000', 'img 1101' fiquem na ordem numérica correta.
+    """
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(s))]
 
 def ensure_dataset_dirs(base_dir: str):
     images_dir = Path(base_dir) / "images" #cria o caminho da subpasta images
@@ -14,10 +22,10 @@ def ensure_dataset_dirs(base_dir: str):
     return images_dir, labels_dir
 
 def list_images(images_dir: str):
-    #abre a pasta images/ e lista os arquivos de imagem
+    #abre a pasta images/ e lista os arquivos de imagem em ordem natural
     exts = (".jpg", ".jpeg", ".png")
     images_dir = Path(images_dir) #convertendo o caminho para um arquivo Path
-    files = sorted([f.name for f in images_dir.iterdir() if f.suffix.lower() in exts])
+    files = sorted([f.name for f in images_dir.iterdir() if f.suffix.lower() in exts], key=natural_sort_key)
     return files
 
 def load_yolo_label(label_fp: str):
@@ -117,7 +125,7 @@ def prepare_from_video(use_model=True):
     extract_frames_equal() #não precisa de parametros pois tudo é tratado dentro da função através do config.json
 
     #Lista todos os arquivos(imagens) na pasta images/
-    files = sorted(Path(images_dir).iterdir())
+    files = sorted(Path(images_dir).iterdir(), key=lambda p: natural_sort_key(p.name))
 
     if use_model:
         #carregar modelo e inferir em cada imagem gerada
@@ -190,7 +198,7 @@ def prepare_from_images(use_model=True):
                 if not dest.exists() or overwrite:
                     dest.write_bytes(img.read_bytes())
 
-    files = sorted(images_dir.iterdir())
+    files = sorted(images_dir.iterdir(), key=lambda p: natural_sort_key(p.name))
 
     if use_model:
         # Carrega modelo e roda inferência
