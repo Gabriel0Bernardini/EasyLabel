@@ -1,4 +1,5 @@
 # tela_rotulagem.py
+import time
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk, ImageDraw
@@ -36,6 +37,7 @@ class LabelingGUI:
         self.boxes_before_drag = None
         self.undo_stack = []
         self.current_cursor = None
+        self.last_backspace_time = 0.0
         self.zoom_factor = 1.0
         self.display_offset = [0, 0]  # [x, y]
         self.pan_start = None
@@ -200,6 +202,9 @@ class LabelingGUI:
         # Atalho Ctrl+Z para desfazer
         self.root.bind_all("<Control-z>", self.undo)
         self.root.bind_all("<Control-Z>", self.undo)
+
+        # Atalho Backspace duplo para excluir imagem e label
+        self.root.bind_all("<BackSpace>", self.on_backspace)
 
         self.load_image() #carrega a primeira imagem e seus labels
         self.update_counter()  # Atualiza o contador ao iniciar
@@ -605,32 +610,111 @@ class LabelingGUI:
         self._clear_hover()
         self.undo_stack = []
         self.boxes_before_drag = None
-        #função para carregar a imagem atual e seus labels
-        #essa função é chamada ao iniciar a GUI e ao mudar de imagem (próxima/anterior)
 
-        #constroi o caminho completo da imagem atual
+        # Se não há mais imagens na pasta
+        if not self.img_files:
+            self.current_image = None
+            self.tkimg = None
+            self.boxes = []
+            self.selected_box = None
+            self.canvas.delete("all")
+            self.box_listbox.delete(0, tk.END)
+            self.root.title("AutoLabeler – Todas as imagens foram excluídas")
+            self.update_counter()
+            return
+
+        # Garante que index esteja dentro dos limites
+        self.index = max(0, min(self.index, len(self.img_files) - 1))
+
+        # constroi o caminho completo da imagem atual
         img_fp = Path(self.images_dir) / self.img_files[self.index]
 
-        #cria uma imagem PIL a partir do arquivo da imagem atual(não é recomendado usar ImageTk diretamente da memoria)
-        pil = Image.open(img_fp).convert("RGB") 
-        self.current_image = pil
+        # abre e converte a imagem liberando o descritor de arquivo
+        with Image.open(img_fp) as pil:
+            self.current_image = pil.convert("RGB")
 
-        #cria o caminho do arquivo de labels correspondente à imagem atual
+        # cria o caminho do arquivo de labels correspondente à imagem atual
         label_fp = Path(self.labels_dir) / (Path(self.img_files[self.index]).stem + ".txt")
         
-        #chama a função load_yolo_label do utils.py para carregar as caixas do arquivo de labels
+        # chama a função load_yolo_label do utils.py para carregar as caixas do arquivo de labels
         yolo_boxes = load_yolo_label(label_fp)
-        self.boxes = [] #apenas limpa a lista atual de boxes antes de carregar as novas
-        W, H = pil.size #pega a largura e altura da imagem atual
+        self.boxes = []
+        W, H = self.current_image.size
 
-        #converte as caixas do formato YOLO(normalizado) para coordenadas de pixel absolutas e armazena na lista self.boxes
+        # converte as caixas do formato YOLO(normalizado) para coordenadas de pixel absolutas
         for b in yolo_boxes:
             cid, x1, y1, x2, y2 = yolo_to_pixel(b, W, H)
             self.boxes.append((x1, y1, x2, y2, b[0]))
         
         self.root.title(f"AutoLabeler – Editando: {self.img_files[self.index]}")
         self.draw_image(recenter=True)
-        self.update_counter()  # Garante atualização ao carregar imagem
+        self.update_counter()
+
+    def on_backspace(self, event=None):
+        """
+        Detecta dois pressionamentos rápidos de Backspace (< 0.6s)
+        para excluir a imagem atual e seu respectivo arquivo label.txt do disco.
+        """
+        if self._is_entry_focused():
+            return
+
+        if not self.img_files or not (0 <= self.index < len(self.img_files)):
+            return
+
+        now = time.time()
+        if now - self.last_backspace_time < 0.6:
+            self.last_backspace_time = 0.0
+            self._delete_current_image()
+        else:
+            self.last_backspace_time = now
+            current_name = self.img_files[self.index]
+            self.root.title(f"⚠️ Pressione Backspace novamente para EXCLUIR {current_name}!")
+            self.root.after(700, self._restore_title_after_backspace)
+
+    def _restore_title_after_backspace(self):
+        if self.img_files and 0 <= self.index < len(self.img_files):
+            self.root.title(f"AutoLabeler – Editando: {self.img_files[self.index]}")
+
+    def _delete_current_image(self):
+        """Exclui o arquivo da imagem atual e seu label .txt correspondente do disco."""
+        if not self.img_files or not (0 <= self.index < len(self.img_files)):
+            return
+
+        self._clear_hover()
+        img_name = self.img_files[self.index]
+        img_fp = Path(self.images_dir) / img_name
+        label_fp = Path(self.labels_dir) / (Path(img_name).stem + ".txt")
+
+        # Libera referências à imagem antes de excluir o arquivo do disco
+        self.current_image = None
+        self.tkimg = None
+
+        # Exclui imagem
+        try:
+            if img_fp.exists():
+                img_fp.unlink()
+                print(f"Arquivo de imagem excluído: {img_fp}")
+        except Exception as e:
+            print(f"Erro ao excluir arquivo de imagem {img_fp}: {e}")
+
+        # Exclui arquivo de anotações .txt
+        try:
+            if label_fp.exists():
+                label_fp.unlink()
+                print(f"Arquivo de label excluído: {label_fp}")
+        except Exception as e:
+            print(f"Erro ao excluir arquivo de label {label_fp}: {e}")
+
+        # Remove da lista de imagens
+        self.img_files.pop(self.index)
+
+        # Ajusta o índice
+        if self.index >= len(self.img_files):
+            self.index = max(0, len(self.img_files) - 1)
+
+        # Carrega a próxima imagem da lista
+        self.load_image()
+        self.update_counter()
 
 
     def draw_image(self, recenter=True):
@@ -996,6 +1080,8 @@ class LabelingGUI:
 
     def prev_image(self):
         self._clear_hover()
+        if not self.img_files:
+            return
         #função para carregar a imagem anterior da lista (se houver)
         if self.index > 0:  #verifica se não estamos na primeira imagem
             if self.autosave:
@@ -1011,6 +1097,8 @@ class LabelingGUI:
 
     def next_image(self):
         self._clear_hover()
+        if not self.img_files:
+            return
         #função para avançar para a próxima imagem na lista
         if self.index < len(self.img_files) - 1:  #verifica se não estamos na última
             if self.autosave:
@@ -1028,6 +1116,8 @@ class LabelingGUI:
     def save_current(self):
         #essa função salva as bounding boxes atuais no formato YOLO (normalizado)
         #é chamada manualmente pelo botão "Save" ou automaticamente se autosave=True
+        if not self.img_files or not (0 <= self.index < len(self.img_files)) or self.current_image is None:
+            return
 
         #pega o nome e caminho da imagem atual
         img_name = self.img_files[self.index]
