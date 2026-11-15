@@ -33,6 +33,9 @@ class LabelingGUI:
         self.start_x = self.start_y = 0 #armazena a posição inicial do mouse ao começar a desenhar uma nova caixa
         self.drag_start_x = self.drag_start_y = 0
         self.drag_start_box = None
+        self.boxes_before_drag = None
+        self.undo_stack = []
+        self.current_cursor = None
         self.zoom_factor = 1.0
         self.display_offset = [0, 0]  # [x, y]
         self.pan_start = None
@@ -86,7 +89,7 @@ class LabelingGUI:
         self.controls_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
 
         # Faz os controles se ajustarem
-        for i in range(8):
+        for i in range(9):
             self.controls_frame.columnconfigure(i, weight=1)
 
         # Botões
@@ -99,11 +102,14 @@ class LabelingGUI:
         tk.Button(self.controls_frame, text="Save", command=self.save_current)\
             .grid(row=0, column=2, sticky="ew", padx=2)
 
+        self.botao_undo = tk.Button(self.controls_frame, text="Desfazer (Ctrl+Z)", command=self.undo)
+        self.botao_undo.grid(row=0, column=3, sticky="ew", padx=2)
+
         self.botao_repetir = tk.Button(self.controls_frame, text="Repetir Anterior (R)", command=self.repetir_boxes_anterior)
-        self.botao_repetir.grid(row=0, column=3, sticky="ew", padx=2)
+        self.botao_repetir.grid(row=0, column=4, sticky="ew", padx=2)
 
         self.botao_modo = tk.Button(self.controls_frame, text="Modo: Criação (M)", command=self.alternar_modo)
-        self.botao_modo.grid(row=0, column=4, sticky="ew", padx=2)
+        self.botao_modo.grid(row=0, column=5, sticky="ew", padx=2)
 
         # Combobox (label)
         self.label_var = tk.StringVar(value=self.labels_list[0])
@@ -113,11 +119,11 @@ class LabelingGUI:
             values=self.labels_list,
             state="readonly"
         )
-        self.label_selector.grid(row=0, column=5, sticky="ew", padx=2)
+        self.label_selector.grid(row=0, column=6, sticky="ew", padx=2)
 
         # Indicador e controle de espessura de Bounding Box (atalhos [ e ])
         thickness_frame = tk.Frame(self.controls_frame)
-        thickness_frame.grid(row=0, column=6, sticky="ew", padx=2)
+        thickness_frame.grid(row=0, column=7, sticky="ew", padx=2)
         tk.Button(thickness_frame, text="-", width=2, command=self.diminuir_espessura)\
             .pack(side="left", padx=1)
         self.thickness_label = tk.Label(
@@ -133,7 +139,7 @@ class LabelingGUI:
 
         # Contador
         self.counter_label = tk.Label(self.controls_frame, text="")
-        self.counter_label.grid(row=0, column=7, sticky="e", padx=5)
+        self.counter_label.grid(row=0, column=8, sticky="e", padx=5)
 
         # ===================== LISTBOX (LATERAL) =====================
         self.box_listbox = tk.Listbox(self.right_frame, width=30)
@@ -190,6 +196,10 @@ class LabelingGUI:
         self.root.bind_all("+", self.aumentar_espessura)
         self.root.bind_all("=", self.aumentar_espessura)
 
+        # Atalho Ctrl+Z para desfazer
+        self.root.bind_all("<Control-z>", self.undo)
+        self.root.bind_all("<Control-Z>", self.undo)
+
         self.load_image() #carrega a primeira imagem e seus labels
         self.update_counter()  # Atualiza o contador ao iniciar
         self.set_canvas_cursor("create")
@@ -227,6 +237,34 @@ class LabelingGUI:
         self.redraw_canvas_boxes()
         print(f"Modo alterado para: {self.modo}")
 
+    def push_undo(self):
+        """Salva uma cópia do estado atual das boxes na pilha de desfazer (máx 50)."""
+        self.undo_stack.append([tuple(b) for b in self.boxes])
+        if len(self.undo_stack) > 50:
+            self.undo_stack.pop(0)
+
+    def undo(self, event=None):
+        """Restaura o estado anterior das bounding boxes (Ctrl+Z)."""
+        if self._is_entry_focused():
+            return
+        if not self.undo_stack:
+            print("Nada para desfazer.")
+            return
+
+        self._clear_hover()
+        prev_boxes = self.undo_stack.pop()
+        self.boxes = [tuple(b) for b in prev_boxes]
+        self.selected_box = None
+        self.drag_start_box = None
+        self.acao = None
+        self.regiao = None
+        self.moving = False
+        self.redraw_canvas_boxes()
+        self.refresh_listbox()
+        if self.autosave:
+            self.save_current()
+        print(f"Ação desfeita (Ctrl+Z). Caixas restantes: {len(self.boxes)}")
+
     def repetir_boxes_anterior(self, event=None):
         """
         Copia as bounding boxes do frame anterior para o frame atual.
@@ -250,6 +288,9 @@ class LabelingGUI:
 
         if self.current_image is None:
             return
+
+        # Salva o estado atual para permitir Ctrl+Z
+        self.push_undo()
 
         W, H = self.current_image.size
         self.boxes = []
@@ -300,21 +341,25 @@ class LabelingGUI:
 
     def set_canvas_cursor(self, cursor_type):
         """
-        Define o cursor do canvas de acordo com o tipo semântico, com fallbacks
-        seguros para compatibilidade com Linux (X11), Windows e macOS.
+        Define o cursor do canvas de acordo com o tipo semântico, com cache
+        para evitar chamadas redundantes e garantir máxima fluidez e responsividade.
         """
+        if getattr(self, 'current_cursor', None) == cursor_type:
+            return
+        self.current_cursor = cursor_type
+
         cursor_map = {
-            'default': ('arrow',),
-            'move': ('fleur', 'arrow'),
-            'create': ('crosshair', 'arrow'),
-            'tl': ('top_left_corner', 'size_nw_se', 'arrow'),
-            'br': ('bottom_right_corner', 'size_nw_se', 'arrow'),
-            'tr': ('top_right_corner', 'size_ne_sw', 'arrow'),
-            'bl': ('bottom_left_corner', 'size_ne_sw', 'arrow'),
-            'tc': ('sb_v_double_arrow', 'size_ns', 'arrow'),
-            'bc': ('sb_v_double_arrow', 'size_ns', 'arrow'),
-            'ml': ('sb_h_double_arrow', 'size_we', 'arrow'),
-            'mr': ('sb_h_double_arrow', 'size_we', 'arrow'),
+            'default': ('arrow', 'left_ptr', 'default'),
+            'move': ('fleur', 'move', 'size_all', 'arrow'),
+            'create': ('crosshair', 'tcross', 'plus', 'arrow'),
+            'tl': ('nwse-resize', 'size_nw_se', 'top_left_corner', 'sizing', 'arrow'),
+            'br': ('nwse-resize', 'size_nw_se', 'bottom_right_corner', 'sizing', 'arrow'),
+            'tr': ('nesw-resize', 'size_ne_sw', 'top_right_corner', 'sizing', 'arrow'),
+            'bl': ('nesw-resize', 'size_ne_sw', 'bottom_left_corner', 'sizing', 'arrow'),
+            'tc': ('ns-resize', 'sb_v_double_arrow', 'size_ns', 'arrow'),
+            'bc': ('ns-resize', 'sb_v_double_arrow', 'size_ns', 'arrow'),
+            'ml': ('ew-resize', 'sb_h_double_arrow', 'size_we', 'arrow'),
+            'mr': ('ew-resize', 'sb_h_double_arrow', 'size_we', 'arrow'),
         }
         targets = cursor_map.get(cursor_type, ('arrow',))
         for c in targets:
@@ -349,7 +394,7 @@ class LabelingGUI:
             'ml': (sx1, sym),
         }
 
-    def _hit_test_box(self, box_idx, canvas_x, canvas_y, hit_radius=6):
+    def _hit_test_box(self, box_idx, canvas_x, canvas_y, hit_radius=8):
         """
         Verifica onde o cursor tocou na caixa:
         - Retorna o nome da alça ('tl', 'tc', 'tr', 'mr', 'br', 'bc', 'bl', 'ml') se tocou numa alça.
@@ -359,7 +404,7 @@ class LabelingGUI:
         if not (0 <= box_idx < len(self.boxes)):
             return None
 
-        # 1. Testa primeiro as 8 alças (prioridade de clique)
+        # 1. Testa primeiro as 8 alças (prioridade máxima e área confortável de clique)
         handles = self._get_box_canvas_handles(box_idx)
         for h_name, (hx, hy) in handles.items():
             if abs(canvas_x - hx) <= hit_radius and abs(canvas_y - hy) <= hit_radius:
@@ -426,71 +471,49 @@ class LabelingGUI:
         ix = int(cx / self.scale_x)
         iy = int(cy / self.scale_y)
 
-        if self.modo == "edicao":
-            hover_regiao = None
-            target_box = None
+        hover_regiao = None
+        target_box = None
 
-            # 1. Prioriza a caixa já selecionada se o cursor estiver sobre suas alças ou interior
-            if self.selected_box is not None and 0 <= self.selected_box < len(self.boxes):
-                hit = self._hit_test_box(self.selected_box, event.x, event.y)
+        # 1. Prioriza a caixa já selecionada se o cursor estiver sobre suas alças ou interior
+        if self.selected_box is not None and 0 <= self.selected_box < len(self.boxes):
+            hit = self._hit_test_box(self.selected_box, event.x, event.y, hit_radius=8)
+            if hit:
+                hover_regiao = hit
+                target_box = self.selected_box
+
+        # 2. Se não estiver sobre a selecionada, testa as outras caixas (do topo para o fundo)
+        if hover_regiao is None:
+            for i in range(len(self.boxes) - 1, -1, -1):
+                hit = self._hit_test_box(i, event.x, event.y, hit_radius=8)
                 if hit:
                     hover_regiao = hit
-                    target_box = self.selected_box
-
-            # 2. Se não estiver sobre a selecionada, testa as outras caixas (do topo para o fundo)
-            if hover_regiao is None:
-                for i in range(len(self.boxes) - 1, -1, -1):
-                    hit = self._hit_test_box(i, event.x, event.y)
-                    if hit:
-                        hover_regiao = hit
-                        target_box = i
-                        break
-
-            # Atualiza o cursor do mouse
-            if hover_regiao is not None:
-                if hover_regiao == "inside":
-                    self.set_canvas_cursor("move")
-                else:
-                    self.set_canvas_cursor(hover_regiao)
-
-                # Atualiza a caixa sob hover e exibe as 8 alças correspondentes
-                if self.hovered_box != target_box:
-                    if self.hover_timer is not None:
-                        self.root.after_cancel(self.hover_timer)
-                        self.hover_timer = None
-                    self.hover_badge_visible = False
-                    self.hovered_box = target_box
-                    self.redraw_canvas_boxes()
-                    self.hover_timer = self.root.after(500, self._trigger_hover_badge)
-            else:
-                self.set_canvas_cursor("default")
-                if self.hovered_box is not None:
-                    self._clear_hover()
-
-        elif self.modo == "criacao":
-            self.set_canvas_cursor("create")
-            # Em modo criação, mantém o hover badge para identificação rápida sem ativar alças
-            hovered_idx = None
-            for i in range(len(self.boxes) - 1, -1, -1):
-                x1, y1, x2, y2, _ = self.boxes[i]
-                x_min, x_max = min(x1, x2), max(x1, x2)
-                y_min, y_max = min(y1, y2), max(y1, y2)
-                if x_min <= ix <= x_max and y_min <= iy <= y_max:
-                    hovered_idx = i
+                    target_box = i
                     break
 
-            if hovered_idx is not None:
-                if self.hovered_box != hovered_idx:
-                    if self.hover_timer is not None:
-                        self.root.after_cancel(self.hover_timer)
-                        self.hover_timer = None
-                    self.hover_badge_visible = False
-                    self.hovered_box = hovered_idx
-                    self.redraw_canvas_boxes()
-                    self.hover_timer = self.root.after(500, self._trigger_hover_badge)
+        if hover_regiao is not None:
+            # Em modo criação, se estiver no interior da caixa (não numa alça), mantém 'create' para permitir desenhar
+            if self.modo == "criacao" and hover_regiao == "inside":
+                self.set_canvas_cursor("create")
+            elif hover_regiao == "inside":
+                self.set_canvas_cursor("move")
             else:
-                if self.hovered_box is not None:
-                    self._clear_hover()
+                # Sobre uma das 8 alças: muda o cursor imediatamente para a seta de redimensionamento correspondente
+                self.set_canvas_cursor(hover_regiao)
+
+            # Atualiza a caixa sob hover e exibe as 8 alças correspondentes
+            if self.hovered_box != target_box:
+                if self.hover_timer is not None:
+                    self.root.after_cancel(self.hover_timer)
+                    self.hover_timer = None
+                self.hover_badge_visible = False
+                self.hovered_box = target_box
+                self.redraw_canvas_boxes()
+                self.hover_timer = self.root.after(500, self._trigger_hover_badge)
+        else:
+            default_cur = "create" if self.modo == "criacao" else "default"
+            self.set_canvas_cursor(default_cur)
+            if self.hovered_box is not None:
+                self._clear_hover()
 
     def _trigger_hover_badge(self):
         self.hover_timer = None
@@ -584,6 +607,8 @@ class LabelingGUI:
 
     def load_image(self):
         self._clear_hover()
+        self.undo_stack = []
+        self.boxes_before_drag = None
         #função para carregar a imagem atual e seus labels
         #essa função é chamada ao iniciar a GUI e ao mudar de imagem (próxima/anterior)
 
@@ -693,50 +718,56 @@ class LabelingGUI:
         ix = int(cx / self.scale_x)
         iy = int(cy / self.scale_y)
 
-        if self.modo == "edicao":
-            self.drag_start_x = ix
-            self.drag_start_y = iy
+        # Salva o estado atual antes de qualquer alteração de arrasto
+        self.boxes_before_drag = [tuple(b) for b in self.boxes]
+        self.drag_start_x = ix
+        self.drag_start_y = iy
 
-            clicked_box = None
-            clicked_regiao = None
+        # Testa se clicou em uma alça ou caixa existente
+        clicked_box = None
+        clicked_regiao = None
 
-            # 1. Se já há uma caixa selecionada, testa suas alças e interior primeiro
-            if self.selected_box is not None and 0 <= self.selected_box < len(self.boxes):
-                hit = self._hit_test_box(self.selected_box, event.x, event.y)
+        # 1. Se já há uma caixa selecionada, testa suas alças e interior primeiro
+        if self.selected_box is not None and 0 <= self.selected_box < len(self.boxes):
+            hit = self._hit_test_box(self.selected_box, event.x, event.y, hit_radius=8)
+            if hit:
+                clicked_box = self.selected_box
+                clicked_regiao = hit
+
+        # 2. Se não clicou na selecionada, testa as demais caixas (do topo para o fundo)
+        if clicked_box is None:
+            for i in range(len(self.boxes) - 1, -1, -1):
+                hit = self._hit_test_box(i, event.x, event.y, hit_radius=8)
                 if hit:
-                    clicked_box = self.selected_box
+                    clicked_box = i
                     clicked_regiao = hit
+                    break
 
-            # 2. Se não clicou na selecionada, testa as demais caixas (do topo para o fundo)
-            if clicked_box is None:
-                for i in range(len(self.boxes) - 1, -1, -1):
-                    hit = self._hit_test_box(i, event.x, event.y)
-                    if hit:
-                        clicked_box = i
-                        clicked_regiao = hit
-                        break
+        # Se clicou em uma alça (qualquer modo) OU se estamos em modo edição e clicou dentro da caixa
+        if clicked_regiao in ('tl', 'tc', 'tr', 'mr', 'br', 'bc', 'bl', 'ml') or (self.modo == "edicao" and clicked_regiao == "inside"):
+            self.selected_box = clicked_box
+            self.regiao = clicked_regiao
+            self.drag_start_box = self.boxes[clicked_box]
+            self.acao = None
 
-            if clicked_box is not None:
-                self.selected_box = clicked_box
-                self.regiao = clicked_regiao
-                self.drag_start_box = self.boxes[clicked_box]
-                self.acao = None
+            # Sincroniza com listbox
+            self.box_listbox.selection_clear(0, tk.END)
+            self.box_listbox.selection_set(clicked_box)
+            self.refresh_listbox()
+            self.redraw_canvas_boxes()
+            return
 
-                # Sincroniza com listbox
-                self.box_listbox.selection_clear(0, tk.END)
-                self.box_listbox.selection_set(clicked_box)
-                self.refresh_listbox()
-            else:
-                # Clicou fora de qualquer caixa: desmarca
-                self.selected_box = None
-                self.regiao = None
-                self.acao = None
-                self.drag_start_box = None
-                self.box_listbox.selection_clear(0, tk.END)
-                self.refresh_listbox()
-
+        # Se estamos no modo de edição e clicou fora de qualquer caixa
+        if self.modo == "edicao":
+            self.selected_box = None
+            self.regiao = None
+            self.acao = None
+            self.drag_start_box = None
+            self.box_listbox.selection_clear(0, tk.END)
+            self.refresh_listbox()
             self.redraw_canvas_boxes()
 
+        # Se estamos no modo de criação e clicou no espaço da imagem (não em uma alça)
         elif self.modo == "criacao":
             self.drawing = True
             self.start_x = ix
@@ -757,8 +788,8 @@ class LabelingGUI:
         ix = int(cx / self.scale_x)
         iy = int(cy / self.scale_y)
 
-        # Se estamos no modo de edição e há uma box selecionada
-        if self.modo == "edicao" and self.selected_box is not None and self.drag_start_box is not None:
+        # Se estamos manipulando uma caixa selecionada (movimento ou redimensionamento)
+        if self.selected_box is not None and self.drag_start_box is not None:
             # detecta se o mouse se moveu o suficiente para considerar um arrasto (>2 px)
             if self.acao is None:
                 if abs(ix - self.drag_start_x) > 2 or abs(iy - self.drag_start_y) > 2:
@@ -886,6 +917,9 @@ class LabelingGUI:
                 self.canvas.delete("temp")
                 return
 
+            # Salva o estado atual na pilha de desfazer (Ctrl+Z)
+            self.push_undo()
+
             # Adiciona a nova bounding box à lista de caixas existentes
             # Formato: (x1, y1, x2, y2, classe_id)
             class_id = self.labels_list.index(self.label_var.get())
@@ -899,13 +933,21 @@ class LabelingGUI:
             if self.autosave:
                 self.save_current()
 
-        elif self.modo == "edicao":
-            # Se estava movendo ou redimensionando, finaliza e persiste
+        elif self.acao in ("movendo", "redimensionando") or self.modo == "edicao":
+            # Se estava movendo ou redimensionando, verifica se houve alteração e salva para Ctrl+Z
             if self.acao in ("movendo", "redimensionando") and self.selected_box is not None:
                 x1, y1, x2, y2, cid = self.boxes[self.selected_box]
                 nx1, nx2 = min(x1, x2), max(x1, x2)
                 ny1, ny2 = min(y1, y2), max(y1, y2)
-                self.boxes[self.selected_box] = (int(nx1), int(ny1), int(nx2), int(ny2), cid)
+                novo_box = (int(nx1), int(ny1), int(nx2), int(ny2), cid)
+
+                # Salva o estado anterior para Ctrl+Z se houve alteração real
+                if self.boxes_before_drag is not None and self.boxes_before_drag != [tuple(b) for b in self.boxes]:
+                    self.undo_stack.append(self.boxes_before_drag)
+                    if len(self.undo_stack) > 50:
+                        self.undo_stack.pop(0)
+
+                self.boxes[self.selected_box] = novo_box
                 self.canvas.delete("temp")
                 self.refresh_listbox()
                 if self.autosave:
@@ -914,6 +956,7 @@ class LabelingGUI:
             self.acao = None
             self.regiao = None
             self.moving = False
+            self.boxes_before_drag = None
             self.redraw_canvas_boxes()
 
 
@@ -1017,6 +1060,9 @@ class LabelingGUI:
         # valida índice
         if not (0 <= idx < len(self.boxes)):
             return
+
+        # Salva para Ctrl+Z
+        self.push_undo()
 
         # remove a caixa
         self.boxes.pop(idx)
