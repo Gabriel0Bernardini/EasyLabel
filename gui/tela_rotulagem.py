@@ -204,7 +204,7 @@ class LabelingGUI:
         self.root.bind_all("<Control-Z>", self.undo)
 
         # Atalho Backspace duplo para excluir imagem e label
-        self.root.bind_all("<BackSpace>", self.on_backspace)
+        self.root.bind("<BackSpace>", self.on_backspace)
 
         self.canvas.bind("<Configure>", lambda e: self.draw_image(recenter=True))
 
@@ -662,13 +662,13 @@ class LabelingGUI:
         para excluir a imagem atual e seu respectivo arquivo label.txt do disco.
         """
         if self._is_entry_focused():
-            return
+            return "break"
 
         if not self.img_files or not (0 <= self.index < len(self.img_files)):
-            return
+            return "break"
 
         now = time.time()
-        if now - self.last_backspace_time < 0.6:
+        if 0 < (now - self.last_backspace_time) < 0.6:
             self.last_backspace_time = 0.0
             self._delete_current_image()
         else:
@@ -677,42 +677,63 @@ class LabelingGUI:
             self.root.title(f"⚠️ Pressione Backspace novamente para EXCLUIR {current_name}!")
             self.root.after(700, self._restore_title_after_backspace)
 
+        return "break"
+
     def _restore_title_after_backspace(self):
         if self.img_files and 0 <= self.index < len(self.img_files):
             self.root.title(f"AutoLabeler – Editando: {self.img_files[self.index]}")
 
     def _delete_current_image(self):
         """Exclui o arquivo da imagem atual e seu label .txt correspondente do disco."""
+        import os
+        from tkinter import messagebox
+
         if not self.img_files or not (0 <= self.index < len(self.img_files)):
             return
 
         self._clear_hover()
         img_name = self.img_files[self.index]
-        img_fp = Path(self.images_dir) / img_name
-        label_fp = Path(self.labels_dir) / (Path(img_name).stem + ".txt")
+        img_fp = (Path(self.images_dir) / img_name).resolve()
+        label_fp = (Path(self.labels_dir) / (Path(img_name).stem + ".txt")).resolve()
 
         # Libera referências à imagem antes de excluir o arquivo do disco
         self.current_image = None
         self.tkimg = None
+        self.canvas.delete("all")
 
-        # Exclui imagem
+        # 1. Exclui a imagem primeiro; se falhar ou não existir, avisa e não apaga o .txt sozinho
+        if not img_fp.exists():
+            messagebox.showerror(
+                "Erro ao excluir",
+                f"Arquivo de imagem não encontrado no caminho:\n{img_fp}",
+                parent=self.root
+            )
+            self.load_image()
+            return
+
         try:
-            if img_fp.exists():
-                img_fp.unlink()
-                print(f"Arquivo de imagem excluído: {img_fp}")
+            os.remove(str(img_fp))
+            print(f"Arquivo de imagem excluído: {img_fp}")
         except Exception as e:
-            print(f"Erro ao excluir arquivo de imagem {img_fp}: {e}")
+            messagebox.showerror(
+                "Erro ao excluir imagem",
+                f"Não foi possível excluir a imagem:\n{img_fp}\n\nErro: {e}",
+                parent=self.root
+            )
+            self.load_image()
+            return
 
-        # Exclui arquivo de anotações .txt
+        # 2. Exclui o arquivo de anotações .txt correspondente
         try:
             if label_fp.exists():
-                label_fp.unlink()
+                os.remove(str(label_fp))
                 print(f"Arquivo de label excluído: {label_fp}")
         except Exception as e:
             print(f"Erro ao excluir arquivo de label {label_fp}: {e}")
 
         # Remove da lista de imagens
         self.img_files.pop(self.index)
+        self.dirty = False
 
         # Ajusta o índice
         if self.index >= len(self.img_files):
