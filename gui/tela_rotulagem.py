@@ -2,7 +2,7 @@
 import time
 import tkinter as tk
 from tkinter import ttk
-from PIL import Image, ImageTk, ImageDraw
+from PIL import Image, ImageTk, ImageDraw, ImageOps
 from core.utils import list_images, load_yolo_label, yolo_to_pixel, pixel_to_yolo
 from core.inference import save_yolo_label
 from pathlib import Path
@@ -101,7 +101,7 @@ class LabelingGUI:
         tk.Button(self.controls_frame, text="Next", command=self.next_image)\
             .grid(row=0, column=1, sticky="ew", padx=2)
 
-        tk.Button(self.controls_frame, text="Save", command=self.save_current)\
+        tk.Button(self.controls_frame, text="Save", command=lambda: self.save_current(force=True))\
             .grid(row=0, column=2, sticky="ew", padx=2)
 
         self.botao_undo = tk.Button(self.controls_frame, text="Desfazer (Ctrl+Z)", command=self.undo)
@@ -204,8 +204,11 @@ class LabelingGUI:
         self.root.bind_all("<Control-Z>", self.undo)
 
         # Atalho Backspace duplo para excluir imagem e label
-        self.root.bind_all("<BackSpace>", self.on_backspace)
+        self.root.bind("<BackSpace>", self.on_backspace)
 
+        self.canvas.bind("<Configure>", lambda e: self.draw_image(recenter=True))
+
+        self.root.update_idletasks()
         self.load_image() #carrega a primeira imagem e seus labels
         self.update_counter()  # Atualiza o contador ao iniciar
         self.set_canvas_cursor("create")
@@ -267,6 +270,7 @@ class LabelingGUI:
         self.moving = False
         self.redraw_canvas_boxes()
         self.refresh_listbox()
+        self.dirty = True
         if self.autosave:
             self.save_current()
         print(f"Ação desfeita (Ctrl+Z). Caixas restantes: {len(self.boxes)}")
@@ -308,6 +312,7 @@ class LabelingGUI:
         self.redraw_canvas_boxes()
         self.refresh_listbox()
 
+        self.dirty = True
         if self.autosave:
             self.save_current()
 
@@ -608,6 +613,7 @@ class LabelingGUI:
 
     def load_image(self):
         self._clear_hover()
+        self.dirty = False
         self.undo_stack = []
         self.boxes_before_drag = None
 
@@ -631,8 +637,8 @@ class LabelingGUI:
 
         # abre e converte a imagem liberando o descritor de arquivo
         with Image.open(img_fp) as pil:
+            pil = ImageOps.exif_transpose(pil)
             self.current_image = pil.convert("RGB")
-
         # cria o caminho do arquivo de labels correspondente à imagem atual
         label_fp = Path(self.labels_dir) / (Path(self.img_files[self.index]).stem + ".txt")
         
@@ -656,13 +662,13 @@ class LabelingGUI:
         para excluir a imagem atual e seu respectivo arquivo label.txt do disco.
         """
         if self._is_entry_focused():
-            return
+            return "break"
 
         if not self.img_files or not (0 <= self.index < len(self.img_files)):
-            return
+            return "break"
 
         now = time.time()
-        if now - self.last_backspace_time < 0.6:
+        if 0 < (now - self.last_backspace_time) < 0.6:
             self.last_backspace_time = 0.0
             self._delete_current_image()
         else:
@@ -671,42 +677,63 @@ class LabelingGUI:
             self.root.title(f"⚠️ Pressione Backspace novamente para EXCLUIR {current_name}!")
             self.root.after(700, self._restore_title_after_backspace)
 
+        return "break"
+
     def _restore_title_after_backspace(self):
         if self.img_files and 0 <= self.index < len(self.img_files):
             self.root.title(f"AutoLabeler – Editando: {self.img_files[self.index]}")
 
     def _delete_current_image(self):
         """Exclui o arquivo da imagem atual e seu label .txt correspondente do disco."""
+        import os
+        from tkinter import messagebox
+
         if not self.img_files or not (0 <= self.index < len(self.img_files)):
             return
 
         self._clear_hover()
         img_name = self.img_files[self.index]
-        img_fp = Path(self.images_dir) / img_name
-        label_fp = Path(self.labels_dir) / (Path(img_name).stem + ".txt")
+        img_fp = (Path(self.images_dir) / img_name).resolve()
+        label_fp = (Path(self.labels_dir) / (Path(img_name).stem + ".txt")).resolve()
 
         # Libera referências à imagem antes de excluir o arquivo do disco
         self.current_image = None
         self.tkimg = None
+        self.canvas.delete("all")
 
-        # Exclui imagem
+        # 1. Exclui a imagem primeiro; se falhar ou não existir, avisa e não apaga o .txt sozinho
+        if not img_fp.exists():
+            messagebox.showerror(
+                "Erro ao excluir",
+                f"Arquivo de imagem não encontrado no caminho:\n{img_fp}",
+                parent=self.root
+            )
+            self.load_image()
+            return
+
         try:
-            if img_fp.exists():
-                img_fp.unlink()
-                print(f"Arquivo de imagem excluído: {img_fp}")
+            os.remove(str(img_fp))
+            print(f"Arquivo de imagem excluído: {img_fp}")
         except Exception as e:
-            print(f"Erro ao excluir arquivo de imagem {img_fp}: {e}")
+            messagebox.showerror(
+                "Erro ao excluir imagem",
+                f"Não foi possível excluir a imagem:\n{img_fp}\n\nErro: {e}",
+                parent=self.root
+            )
+            self.load_image()
+            return
 
-        # Exclui arquivo de anotações .txt
+        # 2. Exclui o arquivo de anotações .txt correspondente
         try:
             if label_fp.exists():
-                label_fp.unlink()
+                os.remove(str(label_fp))
                 print(f"Arquivo de label excluído: {label_fp}")
         except Exception as e:
             print(f"Erro ao excluir arquivo de label {label_fp}: {e}")
 
         # Remove da lista de imagens
         self.img_files.pop(self.index)
+        self.dirty = False
 
         # Ajusta o índice
         if self.index >= len(self.img_files):
@@ -917,6 +944,7 @@ class LabelingGUI:
             novo_box = (int(nx1), int(ny1), int(nx2), int(ny2), cid)
 
             if self.boxes_before_drag is not None and self.boxes_before_drag != [tuple(b) for b in self.boxes]:
+                self.dirty = True
                 self.undo_stack.append(self.boxes_before_drag)
                 if len(self.undo_stack) > 50:
                     self.undo_stack.pop(0)
@@ -998,9 +1026,12 @@ class LabelingGUI:
             cx = event.x - self.display_offset[0]
             cy = event.y - self.display_offset[1]
 
-            if not hasattr(self, 'display_size') or cx < 0 or cy < 0 or cx > self.display_size[0] or cy > self.display_size[1]:
+            if not hasattr(self, 'display_size'):
                 self.canvas.delete("temp")
                 return
+
+            cx = max(0, min(self.display_size[0], cx))
+            cy = max(0, min(self.display_size[1], cy))
 
             end_x = int(cx / self.scale_x)
             end_y = int(cy / self.scale_y)
@@ -1017,6 +1048,7 @@ class LabelingGUI:
 
             class_id = self.labels_list.index(self.label_var.get())
             self.boxes.append((x1, y1, x2, y2, class_id))
+            self.dirty = True
             self.canvas.delete("temp")
             self.refresh_listbox()
             self.drawing = False
@@ -1113,9 +1145,12 @@ class LabelingGUI:
             self.update_counter()
 
 
-    def save_current(self):
+    def save_current(self,force=False):
         #essa função salva as bounding boxes atuais no formato YOLO (normalizado)
         #é chamada manualmente pelo botão "Save" ou automaticamente se autosave=True
+        if not force and not getattr(self, "dirty", False):
+            return
+        
         if not self.img_files or not (0 <= self.index < len(self.img_files)) or self.current_image is None:
             return
 
@@ -1144,6 +1179,7 @@ class LabelingGUI:
 
         #atualiza a listbox para refletir qualquer modificação nas caixas
         self.refresh_listbox()
+        self.dirty = False
 
 
     def on_select_listbox(self, event):
@@ -1189,6 +1225,8 @@ class LabelingGUI:
 
         # remove a caixa
         self.boxes.pop(idx)
+
+        self.dirty = True
 
         # se a caixa removida era anterior à seleção, ajustar selected_box
         if self.selected_box is not None:
