@@ -68,30 +68,28 @@ def yolo_to_pixel(box, img_w, img_h):
     #img_w: largura da imagem em pixels
     #img_h: altura da imagem em pixels
     cid, xc, yc, w, h = box
-
-    #calcula as coordenadas em pixels
-    #é feito dessa forma porque a altura e largura são normalizadas (0 a 1) de acordo com o tamanho da imagem
     bw = w * img_w
     bh = h * img_h
-    x1 = int((xc * img_w) - bw/2)
-    y1 = int((yc * img_h) - bh/2)
-    x2 = int((xc * img_w) + bw/2)
-    y2 = int((yc * img_h) + bh/2)
-    
-    #retorna a tupla (class_id, x1, y1, x2, y2)
+    x1 = round((xc * img_w) - bw / 2)
+    y1 = round((yc * img_h) - bh / 2)
+    x2 = round((xc * img_w) + bw / 2)
+    y2 = round((yc * img_h) + bh / 2)
+
+    # Garante que os pixels fiquem dentro dos limites da imagem
+    x1 = max(0, min(img_w, x1))
+    y1 = max(0, min(img_h, y1))
+    x2 = max(0, min(img_w, x2))
+    y2 = max(0, min(img_h, y2))
     return (cid, x1, y1, x2, y2)
 
 def pixel_to_yolo(x1, y1, x2, y2, img_w, img_h, class_id=0):
-    #converte coordenadas de pixel para o formato YOLO (class_id, xc, yc, w, h) normalizados
-    #para quando um usuario criar uma bounding box manualmente na interface gráfica por exemplo
-    
-    #largura e altura normalizadas
-    w = (x2 - x1) / img_w
-    h = (y2 - y1) / img_h
+    x1, x2 = min(x1, x2), max(x1, x2)
+    y1, y2 = min(y1, y2), max(y1, y2)
 
-    #centro normalizado
-    xc = (x1 + x2) / 2 / img_w
-    yc = (y1 + y2) / 2 / img_h
+    w = max(0.0, min(1.0, (x2 - x1) / img_w))
+    h = max(0.0, min(1.0, (y2 - y1) / img_h))
+    xc = max(0.0, min(1.0, ((x1 + x2) / 2) / img_w))
+    yc = max(0.0, min(1.0, ((y1 + y2) / 2) / img_h))
     return (class_id, xc, yc, w, h)
 
 
